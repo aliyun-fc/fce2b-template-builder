@@ -1,0 +1,130 @@
+name: Build fce2b template
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - .github/workflows/fce2b-landing.yml
+      - Dockerfile
+      - .dockerignore
+      - landing/**
+      - pyproject.toml
+      - uv.lock
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fce2b-landing-${{ github.repository }}-${{ vars.FCE2B_REGION }}
+  cancel-in-progress: false
+
+jobs:
+  landing:
+    name: Build image and verify sandbox
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: python -m pip install --disable-pip-version-check uv==0.11.28
+
+      - name: Install landing dependencies
+        run: uv sync --frozen
+
+      - name: Resolve release configuration
+        id: release
+        env:
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          FCE2B_REGION: ${{ vars.FCE2B_REGION }}
+        run: |
+          set -euo pipefail
+          test -n "$GHCR_TOKEN"
+          test -n "$FCE2B_REGION"
+
+          ghcr_username="$(curl --fail --silent --show-error \
+            -H "Authorization: Bearer $GHCR_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/user | jq -er '.login')"
+          owner="$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"
+          repository="$(printf '%s' "${GITHUB_REPOSITORY#*/}" | tr '[:upper:]' '[:lower:]')"
+          commit="${GITHUB_SHA:0:12}"
+          release_date="$(date -u +%Y%m%d-%H%M%S)"
+          created_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          source_image="ghcr.io/${owner}/${repository}:source-sha-${commit}-${release_date}"
+          final_image="ghcr.io/${owner}/${repository}:sha-${commit}-${release_date}"
+          template_name="ghcr-${repository}-${commit}-${release_date}"
+
+          {
+            echo "ghcr_username=$ghcr_username"
+            echo "source_image=$source_image"
+            echo "final_image=$final_image"
+            echo "template_name=$template_name"
+            echo "created_at=$created_at"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Resolve fce2b region
+        id: region
+        env:
+          FCE2B_REGION: ${{ vars.FCE2B_REGION }}
+        run: |
+          set -euo pipefail
+          api_url="$(jq -er --arg region "$FCE2B_REGION" '.[$region].api_url' landing/regions.json)"
+          domain="$(jq -er --arg region "$FCE2B_REGION" '.[$region].domain' landing/regions.json)"
+          {
+            echo "api_url=$api_url"
+            echo "domain=$domain"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Login to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          GHCR_USERNAME: ${{ steps.release.outputs.ghcr_username }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GHCR_USERNAME" --password-stdin
+
+      - name: Build and push source image
+        env:
+          SOURCE_IMAGE: ${{ steps.release.outputs.source_image }}
+        run: |
+          set -euo pipefail
+          docker build --platform linux/amd64 --tag "$SOURCE_IMAGE" .
+          docker push "$SOURCE_IMAGE"
+
+      - name: Build template and verify run_code
+        env:
+          FCE2B_API_KEY: ${{ secrets.FCE2B_API_KEY }}
+          FCE2B_REGION: ${{ vars.FCE2B_REGION }}
+          FCE2B_API_URL: ${{ steps.region.outputs.api_url }}
+          FCE2B_DOMAIN: ${{ steps.region.outputs.domain }}
+          GHCR_USERNAME: ${{ steps.release.outputs.ghcr_username }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          SOURCE_IMAGE: ${{ steps.release.outputs.source_image }}
+          FINAL_IMAGE: ${{ steps.release.outputs.final_image }}
+          TEMPLATE_NAME: ${{ steps.release.outputs.template_name }}
+          RELEASE_CREATED_AT: ${{ steps.release.outputs.created_at }}
+        run: |
+          set -euo pipefail
+          test -n "$FCE2B_API_KEY"
+          uv run python landing/run.py
+
+      - name: Inspect final image
+        env:
+          FINAL_IMAGE: ${{ steps.release.outputs.final_image }}
+        run: docker buildx imagetools inspect "$FINAL_IMAGE"
+
+      - name: Upload landing result
+        if: always() && hashFiles('landing.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: landing-result
+          path: landing.json
+          if-no-files-found: error

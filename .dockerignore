@@ -1,0 +1,7 @@
+.git
+.github
+.venv
+landing
+landing.json
+README.md
+uv.lock
