@@ -1,75 +1,96 @@
 # fce2b GHCR Template Builder
 
-本仓库是 GitHub Template Repository 示例：提交 Dockerfile 后，GitHub Actions 会构建私有 GHCR 镜像，通过 fce2b builder 创建 Template，再创建 Sandbox 并执行 `run_code` 验收。
+使用本模板仓库，可以把自己的 Dockerfile 发布为私有 GHCR 镜像，并自动创建可用的 fce2b Template。
 
-## 执行链路
+## 快速开始
 
-```text
-Dockerfile
-  -> ghcr.io/<owner>/<repo>:source-sha-<commit>-<date>
-  -> fce2b builder 注入 runtime
-  -> ghcr.io/<owner>/<repo>:sha-<commit>-<date>
-  -> Template
-  -> Sandbox
-  -> run_code
-```
+### 1. 创建自己的仓库
 
-- `<commit>` 为 Git commit SHA 前 12 位。
-- `<date>` 为 Action 开始时的 UTC 时间，格式为 `YYYYMMDD-HHmmss`。
-- source 和 final 使用不同 tag，避免 builder 因目标 tag 已存在而跳过注入。
-- 每次执行都产生新的镜像 tag 和 Template，不覆盖历史版本。
+点击仓库页面右上角的 **Use this template**，选择 **Create a new repository**。
 
-## 配置
+创建仓库后，根据需要修改根目录的 `Dockerfile`。提交代码前，请确保 Dockerfile 可以构建 `linux/amd64` 镜像。
 
-在仓库 Settings 中配置：
+### 2. 创建 GitHub Token
 
-### Actions variable
+创建一个 GitHub PAT classic，并授予以下权限：
 
-| 名称 | 示例 | 说明 |
-| --- | --- | --- |
-| `FCE2B_REGION` | `ap-southeast-1` | fce2b 地域，必须在 `landing/regions.json` 白名单中。 |
+- `read:packages`
+- `write:packages`
 
-### Actions secrets
+Token 所属用户必须对当前仓库及其 private GHCR package 具有读写权限。如果组织启用了 SSO，还需要为该 Token 完成组织授权。
+
+### 3. 配置 GitHub Actions
+
+进入仓库的 **Settings → Secrets and variables → Actions**。
+
+在 **Secrets** 中添加：
 
 | 名称 | 说明 |
 | --- | --- |
-| `FCE2B_API_KEY` | 目标地域的 fce2b API Key。 |
-| `GHCR_TOKEN` | GitHub PAT classic，需要 `read:packages` 和 `write:packages`。 |
+| `FCE2B_API_KEY` | 目标地域的 fce2b 托管 API Key。 |
+| `GHCR_TOKEN` | 上一步创建的 GitHub PAT classic。 |
 
-当前支持以下地域：
+在 **Variables** 中添加：
 
-- 杭州：`cn-hangzhou`
-- 中国香港：`cn-hongkong`
-- 新加坡：`ap-southeast-1`
-- 美国（弗吉尼亚）：`us-east-1`
-- 美国（硅谷）：`us-west-1`
+| 名称 | 示例 | 说明 |
+| --- | --- | --- |
+| `FCE2B_REGION` | `us-west-1` | 创建 Template 的 fce2b 地域。 |
 
-API Key 按地域隔离，切换地域时必须同时替换 `FCE2B_API_KEY`。
+API Key 按地域隔离。修改 `FCE2B_REGION` 时，必须同时把 `FCE2B_API_KEY` 替换为该地域的 API Key。
 
-Action 会用 `GHCR_TOKEN` 调用 GitHub `GET /user` 自动获取用户名，不需要额外配置 GHCR username。如果组织启用 SSO，PAT 还需要完成组织授权。
+当前支持：
 
-landing 执行器会关闭 E2B SDK 的 `e2b_<hex>` 本地格式校验，让纯数字历史 API Key 可以到达 fce2b 服务端；服务端已废弃的数字 Key 仍会被拒绝，请在 FC 控制台创建新的托管 API Key。
+| 地域 | Region |
+| --- | --- |
+| 杭州 | `cn-hangzhou` |
+| 中国香港 | `cn-hongkong` |
+| 新加坡 | `ap-southeast-1` |
+| 美国（弗吉尼亚） | `us-east-1` |
+| 美国（硅谷） | `us-west-1` |
 
-> 当前 sandbox-gateway 会将 Dest Registry 凭证持久化到 Template，以便 FC 后续拉取私有 final image。因此 PAT 必须保持有效；轮换 PAT 后需重新运行 landing。
+### 4. 发布 Template
 
-## 触发
+使用以下任一方式触发发布：
 
-- 向 `master` 提交 Dockerfile、Python 依赖或 landing 文件。
-- 在 Actions 页面手工触发 `Build fce2b template`。
+- 修改并提交 `Dockerfile`、依赖文件或 `landing` 目录中的文件到 `master` 分支；
+- 进入 **Actions → Build fce2b template → Run workflow** 手工触发。
 
-CI 成功后，GitHub Step Summary 和 `landing-result` artifact 会输出：
+一次完整执行通常需要约 1～3 分钟，实际时间取决于地域和镜像大小。
 
-- source/final image；
-- final image digest；
-- Template ID 和 Build ID；
-- Sandbox ID；
-- `run_code` 的自定义依赖验收结果。
+### 5. 获取结果
 
-## 本地检查
+执行成功后，在对应的 GitHub Actions run 中查看：
 
-```bash
-uv sync --frozen
-uv run python -m compileall landing
-```
+- **Summary**：Template ID、Build ID、Sandbox ID、镜像地址和验证结果；
+- **Artifacts → landing-result**：下载完整的 `landing.json`。
 
-完整的 Template Build 和 Sandbox 验收需要 GitHub Actions Secrets，不在本地配置文件中保存凭证。
+保存输出的 Template ID，后续可使用 fce2b/E2B SDK 创建 Sandbox。
+
+## 更新镜像
+
+修改 Dockerfile 或依赖后重新触发 workflow。每次成功发布都会生成新的 Template ID，不会覆盖之前的 Template。
+
+## 凭证维护
+
+- 不要把 `FCE2B_API_KEY` 或 `GHCR_TOKEN` 写入仓库文件、Dockerfile 或 Action 日志。
+- `GHCR_TOKEN` 必须保持有效，确保 fce2b 能够继续读取 private GHCR 镜像。
+- Token 轮换后，更新 `GHCR_TOKEN` 并重新发布 Template。
+- API Key 轮换或切换地域后，更新 `FCE2B_API_KEY` 并重新发布 Template。
+
+## 常见问题
+
+### GHCR 登录或推送返回 401/403
+
+检查 `GHCR_TOKEN` 是否具有 `read:packages`、`write:packages` 权限，以及 Token 所属用户是否能访问当前仓库。如果仓库属于组织，还需检查 SSO 授权。
+
+### fce2b API Key 被拒绝
+
+检查 `FCE2B_API_KEY` 是否为目标地域的有效托管 API Key，并确认它与 `FCE2B_REGION` 对应。
+
+### workflow 没有自动运行
+
+自动触发仅监听 `master` 分支中的 Dockerfile、依赖、workflow 和 `landing` 相关文件。也可以在 Actions 页面手工运行。
+
+### Template 创建成功但后续无法拉取镜像
+
+检查 GHCR package 是否保持 private、`GHCR_TOKEN` 是否过期，以及 Token 所属用户是否仍有 package 读取权限。更新 Token 后重新发布 Template。
