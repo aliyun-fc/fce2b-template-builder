@@ -42,7 +42,6 @@ API Key 按地域隔离。修改 `FCE2B_REGION` 时，必须同时把 `FCE2B_API
 
 | 地域 | Region |
 | --- | --- |
-| 杭州 | `cn-hangzhou` |
 | 中国香港 | `cn-hongkong` |
 | 新加坡 | `ap-southeast-1` |
 | 美国（弗吉尼亚） | `us-east-1` |
