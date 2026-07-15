@@ -3,10 +3,12 @@
 
 import json
 import os
+import time
 from pathlib import Path
 
 from e2b import ApiParams, Template, default_build_logger
 from e2b_code_interpreter import Sandbox
+from e2b.template.types import BuildInfo, TemplateBuildStatus
 
 
 def required_env(name: str) -> str:
@@ -18,6 +20,35 @@ def required_env(name: str) -> str:
     if not value:
         raise RuntimeError(f"缺少环境变量: {name}")
     return value
+
+
+def wait_for_build(build_info: BuildInfo, connection_options: dict, api_params: ApiParams) -> None:
+    """等待 Template Build 完成，并规避终态日志重复返回导致的 SDK 无限轮询。
+
+    build_info: 后台构建返回的 Template 与 Build 标识。
+    connection_options: fce2b API 连接参数。
+    api_params: 包含自定义 Header 与超时的 API 参数。
+    """
+    deadline = time.monotonic() + 1200
+    logs_offset = 0
+    while time.monotonic() < deadline:
+        status = Template.get_build_status(
+            build_info,
+            logs_offset=logs_offset,
+            **connection_options,
+            **api_params,
+        )
+        for entry in status.log_entries:
+            print(f"template build [{entry.level}]: {entry.message}", flush=True)
+        logs_offset += len(status.log_entries)
+
+        if status.status == TemplateBuildStatus.READY:
+            return
+        if status.status == TemplateBuildStatus.ERROR:
+            reason = status.reason.message if status.reason else "Template Build 失败"
+            raise RuntimeError(reason)
+        time.sleep(5)
+    raise TimeoutError("等待 Template Build 完成超时")
 
 
 api_key = required_env("FCE2B_API_KEY")
@@ -64,7 +95,7 @@ print(
     flush=True,
 )
 
-build = Template.build(
+build = Template.build_in_background(
     Template().from_image(source_image),
     name=template_name,
     cpu_count=2,
@@ -74,6 +105,18 @@ build = Template.build(
     **connection,
     **build_params,
 )
+print(
+    json.dumps(
+        {
+            "event": "template_build_submitted",
+            "template_id": build.template_id,
+            "build_id": build.build_id,
+        },
+        ensure_ascii=False,
+    ),
+    flush=True,
+)
+wait_for_build(build, connection, build_params)
 
 sandbox = Sandbox.create(
     template=build.template_id,
