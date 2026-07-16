@@ -96,7 +96,11 @@ jobs:
           SOURCE_IMAGE: ${{ steps.release.outputs.source_image }}
         run: |
           set -euo pipefail
-          docker build --platform linux/amd64 --tag "$SOURCE_IMAGE" .
+          docker build \
+            --platform linux/amd64 \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --tag "$SOURCE_IMAGE" \
+            .
           docker push "$SOURCE_IMAGE"
 
       - name: Build template and verify run_code
